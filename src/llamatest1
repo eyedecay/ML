@@ -1,0 +1,68 @@
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from datasets import load_dataset
+import pandas as pd
+import os
+import csv
+
+BENCHMARK = "mmlu"
+MODEL = "meta-llama/Llama-3.2-3B-Instruct"
+MAX_NEW_TOKENS = 50
+
+def save_result_incrementally(result, file_path):
+    file_exists = os.path.isfile(file_path)
+    with open(file_path, 'a', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=result.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(result) 
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+model = AutoModelForCausalLM.from_pretrained(MODEL).to(device)
+
+if BENCHMARK == "mmlu":
+    subject = "abstract_algebra"
+    dataset = load_dataset("cais/mmlu", subject, split="test")
+    prompt_key = "question"
+    target_key = "answer"
+elif BENCHMARK == "truthful_qa":
+    dataset = load_dataset("truthful_qa", "multiple_choice", split="validation")
+    prompt_key = "question"
+    target_key = "mc1_targets"
+elif BENCHMARK == "halueval":
+    dataset = load_dataset("pminervini/HaluEval", "qa_samples", split="data")
+    prompt_key = "question"
+    target_key = "right_answer"
+
+output_file = f"{BENCHMARK}_evaluation_results.csv"
+
+for idx, row in enumerate(dataset):
+    if BENCHMARK == "halueval":
+        prompt = f"Knowledge: {row['knowledge']}\nQuestion: {row[prompt_key]}\nAnswer:"
+    else:
+        prompt = row[prompt_key]
+
+    messages = [{"role": "user", "content": prompt}]
+    
+    inputs = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(device)
+
+    outputs = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS)
+    generated_text = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
+
+    result = {
+        "input": prompt,
+        "target": row[target_key],
+        "generated": generated_text
+    }
+    
+    save_result_incrementally(result, output_file)
+
+
