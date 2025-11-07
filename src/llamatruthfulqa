@@ -1,0 +1,110 @@
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from datasets import load_dataset
+import os
+import csv
+#Constants
+MODEL = "meta-llama/Llama-3.2-3B-Instruct"
+MAX_NEW_TOKENS = 100
+#Functions
+def save_result_incrementally(result, file_path):
+    """
+    Save results to csv
+    Args:
+        result (dict)
+        file_path (str)
+    Returns:
+        None
+    """
+    file_exists = os.path.isfile(file_path)
+    with open(file_path, 'a', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=result.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(result)
+
+def get_processed_ids(file_path):
+    """
+    Get set of already processed question IDs from CSV
+    Args: 
+        file_path (str)
+    Returns:
+        set[int] (questions that have been answered)
+    """
+    if not os.path.isfile(file_path):
+        return set()
+    
+    processed = set()
+    with open(file_path, 'r', encoding='utf-8') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            processed.add(int(row['question_id']))
+    return processed
+
+#main
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+print(f"Loading model: {MODEL}")
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+model = AutoModelForCausalLM.from_pretrained(MODEL).to(device)
+
+#Load dataset
+dataset = load_dataset("truthfulqa/truthfulqa", "generation", split="validation")
+output_file = "truthfulqa_generation_results.csv"
+
+#Check for already processed questions
+processed_ids = get_processed_ids(output_file)
+if processed_ids:
+    print(f"Found {len(processed_ids)} already processed questions. ")
+else:
+    print("Starting again")
+
+print(f"Processing {len(dataset)} questions...")
+
+processed_this_run = 0
+
+for idx, row in enumerate(dataset):
+    #Skip if already processed (for crash stuff)
+    if idx in processed_ids:
+        continue
+    
+    prompt = row["question"]
+    
+    messages = [{"role": "user", "content": prompt}]
+    
+    inputs = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(device)
+
+    outputs = model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS)
+    generated_text = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
+
+    result = {
+        "question_id": idx,
+        "input": prompt,
+        "generated": generated_text,
+        "best_answer": row["best_answer"],
+        "correct_answers": " | ".join(row["correct_answers"]),
+        "incorrect_answers": " | ".join(row["incorrect_answers"]),
+        "category": row.get("category", "N/A")
+    }
+    
+    save_result_incrementally(result, output_file)
+    processed_this_run += 1
+    
+    if (idx + 1) % 50 == 0:
+        total_done = len(processed_ids) + processed_this_run
+        remaining = len(dataset) - total_done
+        print(f"Progress: {total_done}/{len(dataset)} | Remaining: {remaining}")
+
+print(f"\nResults saved to: {output_file}")
+
+final_processed = get_processed_ids(output_file)
+print(f"Total questions processed: {len(final_processed)}/{len(dataset)}")
+print(f"New questions this run: {processed_this_run}")
+print("Done!")
