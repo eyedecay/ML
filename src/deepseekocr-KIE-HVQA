@@ -1,0 +1,192 @@
+import torch
+from transformers import AutoModel, AutoTokenizer
+from datasets import load_dataset
+import os
+import csv
+import json
+import re
+from PIL import Image
+
+#Constants
+MODEL = "deepseek-ai/DeepSeek-OCR"
+
+#Functions
+def save_result_incrementally_csv(result, file_path):
+    """
+    Save results
+    """
+    file_exists = os.path.isfile(file_path)
+    with open(file_path, 'a', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=result.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(result)
+
+def save_result_incrementally_jsonl(result, file_path):
+    """
+    Save results to JSONL
+    """
+    with open(file_path, 'a', encoding='utf-8') as file:
+        file.write(json.dumps(result, ensure_ascii=False) + '\n')
+
+def parse_degradation_tags(text):
+    """
+    Parse text with degradation tags and separate into:
+    - clear characters (fully legible)
+    - not clear characters (partially occluded or completely occluded)
+    - final OCR (complete text)
+    
+    """
+    clear_chars = ""
+    not_clear_chars = ""
+    final_ocr = ""
+    
+    #Remove <occluded> tags (completely unreadable - represents missing characters)
+    #These should be spaces in final, and tracked separately
+    temp = text
+    
+    #Find all <part_occluded>[X] patterns (partially visible characters)
+    part_occluded_pattern = r'<part_occluded>\[(.?)\]'
+    part_occluded_matches = re.findall(part_occluded_pattern, temp)
+    
+    #Find all <occluded> patterns (completely hidden characters)
+    occluded_pattern = r'<occluded>'
+    occluded_count = len(re.findall(occluded_pattern, temp))
+    
+    #Extract clear characters (everything not in tags)
+    clear_text = re.sub(r'<part_occluded>\[.?\]', '', temp)
+    clear_text = re.sub(r'<occluded>', '', clear_text)
+    clear_chars = clear_text
+    
+    #Not clear characters = partially occluded ones
+    not_clear_chars = ''.join(part_occluded_matches)
+    
+    #Final OCR = clear + partially occluded (not completely occluded)
+    final_ocr = clear_chars
+    for char in part_occluded_matches:
+        # Insert partially occluded chars back in approximate positions
+        final_ocr += char
+    
+    #Alternative: reconstruct final by just removing tags
+    final_ocr_clean = temp
+    final_ocr_clean = re.sub(r'<part_occluded>\[(.?)\]', r'\1', final_ocr_clean)
+    final_ocr_clean = re.sub(r'<occluded>', '', final_ocr_clean)
+    
+    return {
+        "clear Char-level OCR": clear_chars,
+        "not clear enough Char-level OCR": not_clear_chars,
+        "Final OCR": final_ocr_clean
+    }
+
+#Setup device
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+#Load model
+print(f"Loading {MODEL}...")
+tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
+model = AutoModel.from_pretrained(
+    MODEL, 
+    trust_remote_code=True, 
+    use_safetensors=True
+)
+model = model.eval().cuda().to(torch.bfloat16)
+
+#Load KIE-HVQA dataset
+print("Loading KIE-HVQA dataset...")
+dataset = load_dataset("bytedance-research/KIE-HVQA", split="test")
+
+output_csv = "kie_hvqa_deepseek_ocr_results.csv"
+output_jsonl = "kie_hvqa_deepseek_ocr_results.jsonl"
+output_dir = "./outputs/kie_hvqa"
+os.makedirs(output_dir, exist_ok=True)
+
+#Clear previous JSONL file if exists
+if os.path.exists(output_jsonl):
+    os.remove(output_jsonl)
+
+print(f"Evaluating DeepSeek-OCR on KIE-HVQA with {len(dataset)} examples...")
+
+for idx, row in enumerate(dataset):
+    print(f"Processing example {idx + 1}/{len(dataset)}...")
+    
+    #Get image 
+    if isinstance(row['image'], str):
+        image_path = row['image']
+    elif hasattr(row['image'], 'filename'):
+        image_path = row['image'].filename
+    else:
+        #If it's a PIL Image, save it temporarily
+        image_path = os.path.join(output_dir, f"temp_image_{idx}.jpg")
+        row['image'].save(image_path)
+    
+    question = row['question']
+    ground_truth = row['answer']
+    
+    #Parse ground truth into the three components
+    gt_parsed = parse_degradation_tags(ground_truth)
+    
+    prompt = f"<image>\n<|grounding|>{question}"
+    
+    try:
+        res = model.infer(
+            tokenizer, 
+            prompt=prompt, 
+            image_file=image_path,
+            output_path=output_dir,
+            base_size=1024,
+            image_size=640,
+            crop_mode=True,
+            save_results=True,
+            test_compress=True
+        )
+        
+        generated_text = res if isinstance(res, str) else str(res)
+        
+   
+        pred_parsed = {
+            "clear Char-level OCR": generated_text,  #Assume model output is "clear"
+            "not clear enough Char-level OCR": "",   #Model doesn't output degraded separately
+            "Final OCR": generated_text
+        }
+        
+    except Exception as e:
+        print(f"Error processing example {idx}: {e}")
+        generated_text = f"[ERROR: {str(e)}]"
+        pred_parsed = {
+            "clear Char-level OCR": "",
+            "not clear enough Char-level OCR": "",
+            "Final OCR": generated_text
+        }
+    
+    #Save to CSV 
+    csv_result = {
+        "idx": idx,
+        "image_path": image_path,
+        "question": question,
+        "ground_truth_raw": ground_truth,
+        "ground_truth_clear": gt_parsed["clear Char-level OCR"],
+        "ground_truth_notclear": gt_parsed["not clear enough Char-level OCR"],
+        "ground_truth_final": gt_parsed["Final OCR"],
+        "generated_text": generated_text,
+        "document_type": row.get('document_type', 'unknown')
+    }
+    save_result_incrementally_csv(csv_result, output_csv)
+    
+    #Save to JSONL (format for eval.py)
+    jsonl_result = {
+        "answer": f"<answer>{json.dumps(gt_parsed, ensure_ascii=False)}</answer>",
+        "response": json.dumps(pred_parsed, ensure_ascii=False)
+    }
+    save_result_incrementally_jsonl(jsonl_result, output_jsonl)
+    
+    #Clean up temporary image if created
+    if not isinstance(row['image'], str) and not hasattr(row['image'], 'filename'):
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+print(f"Evaluation complete!")
+print(f"CSV results (human-readable): {output_csv}")
+print(f"JSONL results (for eval.py):  {output_jsonl}")
+print(f"OCR output files saved to:    {output_dir}")
+#To calculate benchark scores, clone eval repo (https://huggingface.co/datasets/bytedance-research/KIE-HVQA) and run python3 eval.py in the KIE0HVQA Folder"
