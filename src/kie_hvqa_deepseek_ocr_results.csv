@@ -1,0 +1,3 @@
+idx,id,image_path,question,ground_truth_raw,ground_truth_clear,ground_truth_notclear,ground_truth_final,generated_text
+0,card_1_1,..\KIE-HVQA\data\image_000334.png,What is the LN in the image?,"{""clear Char-level OCR"": ""S m t "", ""not clear enough Char-level OCR"": """", ""clear number"": 3, ""not clear enough number"": 0, ""Final OCR"": ""Sm t ""}",S m t ,,Sm t ,None
+1,card_1_2,..\KIE-HVQA\data\image_000335.png,What is the FN in the image?,"{""clear Char-level OCR"": ""m i "", ""not clear enough Char-level OCR"": ""E"", ""clear number"": 2, ""not clear enough number"": 1, ""Final OCR"": ""Emi  ""}",m i ,E,Emi  ,None
