@@ -4,9 +4,9 @@ import os
 import csv
 import json
 
-# ================================
-# CONFIG
-# ================================
+
+#CONFIG
+
 MODEL = "deepseek-ai/DeepSeek-OCR"
 DATA_FILE = "../KIE-HVQA/kie_hocr.jsonl"
 IMAGE_BASE_PATH = "../KIE-HVQA"
@@ -20,10 +20,15 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 if os.path.exists(OUTPUT_JSONL):
     os.remove(OUTPUT_JSONL)
 
-# ================================
-# UTILITY FUNCTIONS
-# ================================
+
+#functions
+
 def save_result_incrementally_csv(result, file_path):
+    """
+    saves results incrementally
+    Args:
+        file_path
+    """
     file_exists = os.path.isfile(file_path)
     with open(file_path, 'a', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=result.keys())
@@ -32,35 +37,32 @@ def save_result_incrementally_csv(result, file_path):
         writer.writerow(result)
 
 def save_result_incrementally_jsonl(result, file_path):
+    """
+    saves results incrementally (JSON)
+    Args:
+        file_ath
+    """
     with open(file_path, 'a', encoding='utf-8') as f:
         f.write(json.dumps(result, ensure_ascii=False) + '\n')
 
-# ================================
-# SYSTEM CHECK
-# ================================
-print("="*50)
+#System Check
 print("SYSTEM CHECK")
-print("="*50)
 print(f"PyTorch version: {torch.__version__}")
 print(f"CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"CUDA version: {torch.version.cuda}")
     print(f"GPU Device: {torch.cuda.get_device_name(0)}")
     print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-print("="*50)
 
-# ================================
-# LOAD MODEL
-# ================================
+#Load Model
 print(f"\nLoading {MODEL}...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
 model = AutoModel.from_pretrained(MODEL, trust_remote_code=True, torch_dtype=torch.bfloat16)
 model = model.eval().cuda()
-print("✓ Model loaded on GPU")
+print("Model loaded on GPU")
 
-# ================================
-# LOAD DATASET
-# ================================
+
+#Load Dataset
 print(f"\nLoading dataset from {DATA_FILE}...")
 dataset = []
 with open(DATA_FILE, 'r', encoding='utf-8') as f:
@@ -69,13 +71,9 @@ with open(DATA_FILE, 'r', encoding='utf-8') as f:
             dataset.append(json.loads(line))
 print(f"✓ Dataset loaded: {len(dataset)} examples")
 
-# ================================
-# RUN INFERENCE
-# ================================
+#Inference
 total = len(dataset)
-print(f"\n{'='*50}")
 print("Starting evaluation on entire dataset...")
-print(f"{'='*50}\n")
 
 for idx, row in enumerate(dataset):
     print(f"\n[{idx+1}/{total}] Processing {row.get('id', 'unknown')}...")
@@ -125,9 +123,8 @@ for idx, row in enumerate(dataset):
         sys.stdout = old_stdout
         captured_text = captured.getvalue()
 
-        # ================================
-        # EXTRACT FULL OCR TEXT
-        # ================================
+        #Extract Text
+
         lines = captured_text.split("\n")
         ocr_text = []
         separator_count = 0
@@ -150,7 +147,7 @@ for idx, row in enumerate(dataset):
         if not generated_text:
             generated_text = "[ERROR: OCR text not found]"
 
-        print("  ✓ Generated OCR (first 300 chars):")
+        print(" Generated OCR:")
         print(generated_text[:300])
 
     except Exception as e:
@@ -160,9 +157,7 @@ for idx, row in enumerate(dataset):
         traceback.print_exc()
         generated_text = f"[ERROR: {str(e)}]"
 
-    # ================================
-    # SAVE RESULTS
-    # ================================
+    #Save
     pred_parsed = {
         "clear Char-level OCR": generated_text,
         "not clear enough Char-level OCR": "",
@@ -190,9 +185,7 @@ for idx, row in enumerate(dataset):
     if idx % 10 == 0:
         torch.cuda.empty_cache()
 
-print(f"\n{'='*50}")
-print("Evaluation complete on entire dataset!")
-print("="*50)
+print("Evaluation complete on entire dataset")
 print(f"CSV: {OUTPUT_CSV}")
 print(f"JSONL: {OUTPUT_JSONL}")
 print("\nRun evaluation:")
